@@ -31,6 +31,7 @@ install_deps() {
     command -v sysbench &>/dev/null || missing+=(sysbench)
     command -v smartctl &>/dev/null || missing+=(smartmontools)
     command -v lspci &>/dev/null || missing+=(pciutils)
+    command -v bc &>/dev/null || missing+=(bc)
     if [ ${#missing[@]} -gt 0 ]; then
         echo "Installing missing tools: ${missing[*]}"
         apt install -y "${missing[@]}"
