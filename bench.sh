@@ -141,7 +141,7 @@ bench_disk() {
 
 bench_all_nvme() {
     local devs
-    # Detect NVMe (nvme*) and non-rotational disks (SSD: sd*, vd*, etc.)
+    # Detect all non-rotational (SSD/NVMe) disks
     devs=$(lsblk -d -o NAME,TYPE,ROTA --noheadings | awk '$2=="disk" && $3=="0" {print "/dev/"$1}')
 
     if [ -z "$devs" ]; then
@@ -151,23 +151,45 @@ bench_all_nvme() {
 
     for dev in $devs; do
         local mountpoint testfile
-        mountpoint=$(lsblk -o MOUNTPOINT "$dev" --noheadings | grep -v "^$" | head -1)
+        # Get mount point of the disk itself (not partitions like /boot/efi)
+        # Only consider mount points under /data* or / (skip /boot, /boot/efi, etc.)
+        mountpoint=$(lsblk -no MOUNTPOINT "$dev" | grep -v "^$" | grep -E "^/(data|mnt|home|$)" | grep -v "^/boot" | head -1)
 
-        if [ -n "$mountpoint" ]; then
-            testfile="${mountpoint}/fiotest_bench"
+        # If disk has partitions but no direct mountpoint, check if it's part of LVM/system disk
+        if [ -z "$mountpoint" ]; then
+            # Check if any partition is part of LVM or system (skip these)
+            local is_system=0
+            if lsblk -no TYPE "$dev" | grep -q "lvm"; then
+                is_system=1
+            fi
+            # Check if only has /boot/efi or similar small partitions
+            local part_mounts
+            part_mounts=$(lsblk -no MOUNTPOINT "$dev" | grep -v "^$" | grep -v "^/boot")
+            if [ -z "$part_mounts" ] && [ "$is_system" -eq 0 ]; then
+                echo ""
+                printf "  ${YELLOW}$dev has no suitable mount point.${NC}\n"
+                read -rp "  Enter mount point to test (or 'skip'): " user_input
+                if [ "$user_input" = "skip" ]; then
+                    echo "  Skipping $dev"
+                    continue
+                fi
+                if [ ! -d "$user_input" ]; then
+                    echo "  Directory does not exist. Skipping."
+                    continue
+                fi
+                testfile="${user_input}/fiotest_bench"
+            else
+                # System/LVM disk, test on root if it's mounted there
+                if [ "$is_system" -eq 1 ]; then
+                    testfile="/fiotest_bench"
+                    mountpoint="/"
+                else
+                    echo "  Skipping $dev (system disk)"
+                    continue
+                fi
+            fi
         else
-            echo ""
-            printf "  ${YELLOW}$dev is not mounted.${NC}\n"
-            read -rp "  Enter mount point to test (or 'skip'): " user_input
-            if [ "$user_input" = "skip" ]; then
-                echo "  Skipping $dev"
-                continue
-            fi
-            if [ ! -d "$user_input" ]; then
-                echo "  Directory does not exist. Skipping."
-                continue
-            fi
-            testfile="${user_input}/fiotest_bench"
+            testfile="${mountpoint}/fiotest_bench"
         fi
 
         bench_disk "$dev" "$testfile"
