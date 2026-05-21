@@ -142,55 +142,59 @@ bench_disk() {
 
 bench_all_nvme() {
     local devs
-    # Detect all non-rotational (SSD/NVMe) disks
-    devs=$(lsblk -d -o NAME,TYPE,ROTA --noheadings | awk '$2=="disk" && $3=="0" {print "/dev/"$1}')
+    # Detect: 1) non-rotational disks (SSD/NVMe) 2) md RAID arrays
+    devs=$(lsblk -d -o NAME,TYPE,ROTA --noheadings | awk '
+        ($2=="disk" && $3=="0") {print "/dev/"$1}
+        ($2=="raid0" || $2=="raid1" || $2=="raid5" || $2=="raid6" || $2=="raid10") {print "/dev/"$1}
+    ')
 
     if [ -z "$devs" ]; then
-        echo "  No SSD/NVMe devices found."
+        echo "  No SSD/NVMe/RAID devices found."
         return
     fi
 
+    # Track which disks are part of RAID, skip testing them individually
+    local raid_members=""
     for dev in $devs; do
-        local mountpoint testfile
-        # Get mount point of the disk itself (not partitions like /boot/efi)
-        # Only consider mount points under /data* or / (skip /boot, /boot/efi, etc.)
-        mountpoint=$(lsblk -no MOUNTPOINT "$dev" | grep -v "^$" | grep -E "^/(data|mnt|home|$)" | grep -v "^/boot" | head -1)
+        if [[ "$(basename "$dev")" == md* ]]; then
+            local members
+            members=$(cat "/sys/block/$(basename "$dev")/md/dev-"*/block/device/../../../nvme*/nvme*/serial 2>/dev/null || \
+                      cat /proc/mdstat | grep "$(basename "$dev")" | grep -oP 'nvme\d+n\d+p?\d*' || true)
+            for m in $members; do
+                raid_members+=" ${m%%p*} "
+            done
+        fi
+    done
 
-        # If disk has partitions but no direct mountpoint, check if it's part of LVM/system disk
-        if [ -z "$mountpoint" ]; then
-            # Check if any partition is part of LVM or system (skip these)
-            local is_system=0
-            if lsblk -no TYPE "$dev" | grep -q "lvm"; then
-                is_system=1
-            fi
-            # Check if only has /boot/efi or similar small partitions
-            local part_mounts
-            part_mounts=$(lsblk -no MOUNTPOINT "$dev" | grep -v "^$" | grep -v "^/boot")
-            if [ -z "$part_mounts" ] && [ "$is_system" -eq 0 ]; then
-                echo ""
-                printf "  ${YELLOW}$dev has no suitable mount point.${NC}\n"
-                read -rp "  Enter mount point to test (or 'skip'): " user_input
-                if [ "$user_input" = "skip" ]; then
-                    echo "  Skipping $dev"
-                    continue
-                fi
-                if [ ! -d "$user_input" ]; then
-                    echo "  Directory does not exist. Skipping."
-                    continue
-                fi
-                testfile="${user_input}/fiotest_bench"
-            else
-                # System/LVM disk, test on root if it's mounted there
-                if [ "$is_system" -eq 1 ]; then
-                    testfile="/fiotest_bench"
-                    mountpoint="/"
-                else
-                    echo "  Skipping $dev (system disk)"
-                    continue
-                fi
-            fi
-        else
+    for dev in $devs; do
+        local devname
+        devname=$(basename "$dev")
+
+        # Skip individual disks that are part of a RAID
+        if [[ "$raid_members" == *"$devname"* ]]; then
+            printf "  ${YELLOW}Skipping $dev (part of RAID)${NC}\n"
+            continue
+        fi
+
+        local mountpoint testfile
+        # Get suitable mount point (skip /boot*)
+        mountpoint=$(lsblk -no MOUNTPOINT "$dev" 2>/dev/null | grep -v "^$" | grep -v "^/boot" | head -1)
+
+        if [ -n "$mountpoint" ]; then
             testfile="${mountpoint}/fiotest_bench"
+        else
+            echo ""
+            printf "  ${YELLOW}$dev has no suitable mount point.${NC}\n"
+            read -rp "  Enter mount point to test (or 'skip'): " user_input
+            if [ "$user_input" = "skip" ]; then
+                echo "  Skipping $dev"
+                continue
+            fi
+            if [ ! -d "$user_input" ]; then
+                echo "  Directory does not exist. Skipping."
+                continue
+            fi
+            testfile="${user_input}/fiotest_bench"
         fi
 
         bench_disk "$dev" "$testfile"
