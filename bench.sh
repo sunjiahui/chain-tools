@@ -197,6 +197,15 @@ bench_all_nvme() {
             testfile="${user_input}/fiotest_bench"
         fi
 
+        echo ""
+        printf "  Device: $dev\n"
+        printf "  Test file: $testfile\n"
+        read -rp "  Proceed with IO test? (y/n): " confirm
+        if [[ "$confirm" != "y" ]]; then
+            echo "  Skipping $dev"
+            continue
+        fi
+
         bench_disk "$dev" "$testfile"
     done
 }
