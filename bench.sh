@@ -141,10 +141,11 @@ bench_disk() {
 
 bench_all_nvme() {
     local devs
-    devs=$(lsblk -d -o NAME,TYPE --noheadings | awk '$2=="disk" && $1~/^nvme/ {print "/dev/"$1}')
+    # Detect NVMe (nvme*) and non-rotational disks (SSD: sd*, vd*, etc.)
+    devs=$(lsblk -d -o NAME,TYPE,ROTA --noheadings | awk '$2=="disk" && $3=="0" {print "/dev/"$1}')
 
     if [ -z "$devs" ]; then
-        echo "  No NVMe devices found."
+        echo "  No SSD/NVMe devices found."
         return
     fi
 
